@@ -50,7 +50,6 @@ import ida_idp
 
 PLUGIN_NAME = "Find Xrefs"
 PLUGIN_HOTKEY = "Ctrl-Shift-X"
-ACTION_NAME = "findxrefs:run"
 
 # Max bytes to look back when locating an instruction start (prefixes + REX +
 # opcode fit easily in 8 bytes).
@@ -418,33 +417,17 @@ def run_find_xrefs():
 # --------------------------------------------------------------------------- #
 # IDA integration
 # --------------------------------------------------------------------------- #
-class FindXrefsHandler(ida_kernwin.action_handler_t):
-    def activate(self, ctx):
-        run_find_xrefs()
-        return 1
-
-    def update(self, ctx):
-        return ida_kernwin.AST_ENABLE_ALWAYS
-
-
 class FindXrefsPlugin(ida_idaapi.plugin_t):
     flags = ida_idaapi.PLUGIN_KEEP
     comment = "Find and materialize hidden xrefs to the current address"
     help = __doc__
     wanted_name = PLUGIN_NAME
-    # Hotkey is set on the registered action. Leaving wanted_hotkey empty avoids
-    # registering the same shortcut twice ("Conflicting shortcut").
-    wanted_hotkey = ""
+    # wanted_hotkey both binds the shortcut and shows it as the hint next to the
+    # entry in Edit > Plugins. Being the only registration, there is no
+    # "Conflicting shortcut".
+    wanted_hotkey = PLUGIN_HOTKEY
 
     def init(self):
-        action = ida_kernwin.action_desc_t(
-            ACTION_NAME,
-            PLUGIN_NAME,
-            FindXrefsHandler(),
-            PLUGIN_HOTKEY,
-            "Find hidden references to the current address",
-        )
-        ida_kernwin.register_action(action)
         ida_kernwin.msg("[Find Xrefs] loaded. Hotkey: %s\n" % PLUGIN_HOTKEY)
         if _HAVE_NUMPY:
             ida_kernwin.msg("[Find Xrefs] numpy OK: vectorized engine active.\n")
@@ -458,9 +441,6 @@ class FindXrefsPlugin(ida_idaapi.plugin_t):
 
     def run(self, arg):
         run_find_xrefs()
-
-    def term(self):
-        ida_kernwin.unregister_action(ACTION_NAME)
 
 
 def PLUGIN_ENTRY():

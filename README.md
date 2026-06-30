@@ -14,10 +14,11 @@ and forces them to appear.
 
 ## The problem
 
-On very large binaries IDA is still auto-analyzing when you open a string. The
-code that references the string is still **undefined bytes**, so IDA has not
-created the cross-reference yet. Pressing **X** reports "no xrefs" — not because
-none exist, but because that code was never decoded.
+On very large binaries IDA is still auto-analyzing when you land on an item — a
+string, function, global, or any referenceable address. The code that
+references it is still **undefined bytes**, so IDA has not created the
+cross-reference yet. Pressing **X** reports "no xrefs" — not because none exist,
+but because that code was never decoded.
 
 ## What it does
 
@@ -62,11 +63,9 @@ Restart IDA.
 
 ## Notes
 
-- The plugin does not call `auto_wait()`, so it won't block waiting for IDA's
-  full autoanalysis; `create_insn` registers the xref immediately.
 - Large segments are scanned in overlapping chunks with a cancellable progress
   box.
 
 ## License
 
-MIT (add a `LICENSE` file).
+Released under the MIT License. See [LICENSE](LICENSE).
