@@ -12,6 +12,8 @@ Place the cursor on the string (or any target address) and run the plugin
      target == disp_addr + 4 + disp32.
   2. Absolute: literal pointers to the address (data tables, mov reg,imm,
      push offset, ...).
+  3. Raw Relative 32-bit: Sliding window scan evaluating
+     target == current_ea + 4 + rel32 across all loaded segments.
 
 Each match that lands on undefined bytes is materialized (create_insn or a data
 offset). Once the byte becomes code/offset, IDA generates the xref and it shows
@@ -245,6 +247,76 @@ def scan_absolute(target, segments, found):
             pos = data.find(needle, pos + 1)
 
 
+def scan_raw_rel32(target, segments, found):
+    """
+    Sliding window scanner checking every 4-byte displacement in IDA memory space:
+    target_ea == current_ea + 4 + rel32
+    """
+    engine_name = "numpy (vectorized)" if _HAVE_NUMPY else "standard python loop"
+    ida_kernwin.msg("[Find Xrefs] Raw Relative 32-bit engine active (%s).\n" % engine_name)
+
+    for seg_start, seg_end in segments:
+        if ida_kernwin.user_cancelled():
+            return
+        size = seg_end - seg_start
+        if size < 4:
+            continue
+
+        off = 0
+        while off < size - 3:
+            if ida_kernwin.user_cancelled():
+                return
+
+            chunk_len = min(SCAN_CHUNK, size - off)
+            base_ea = seg_start + off
+            data = ida_bytes.get_bytes(base_ea, chunk_len)
+
+            if data:
+                ida_kernwin.replace_wait_box(
+                    "Find Xrefs (Raw rel32): scanning %#x (%d%%)"
+                    % (base_ea, (off * 100) // max(size, 1))
+                )
+
+                if _HAVE_NUMPY:
+                    arr = np.frombuffer(data, dtype=np.uint8)
+                    if arr.size >= 4:
+                        disp = (arr[:-3].astype(np.uint32)
+                                | (arr[1:-2].astype(np.uint32) << 8)
+                                | (arr[2:-1].astype(np.uint32) << 16)
+                                | (arr[3:].astype(np.uint32) << 24)).astype(np.int32)
+
+                        K = target - base_ea - 4
+                        indices = np.arange(disp.size, dtype=np.int64)
+                        
+                        hits = np.nonzero((disp.astype(np.int64) + indices) == K)[0]
+
+                        for i in hits.tolist():
+                            curr_ea = base_ea + int(i)
+                            start, sz = _find_insn_start(curr_ea + 4, target)
+                            if start is not None:
+                                _add_result(found, start, sz, "rel32-code", target)
+                            else:
+                                _add_result(found, curr_ea, 4, "rel32-raw", target)
+                else:
+                    limit = len(data) - 4
+                    for i in range(limit + 1):
+                        rel32 = struct.unpack_from("<i", data, i)[0]
+                        curr_ea = base_ea + i
+
+                        calculated_target = (curr_ea + 4 + rel32) & 0xFFFFFFFFFFFFFFFF
+                        
+                        if calculated_target == target:
+                            start, sz = _find_insn_start(curr_ea + 4, target)
+                            if start is not None:
+                                _add_result(found, start, sz, "rel32-code", target)
+                            else:
+                                _add_result(found, curr_ea, 4, "rel32-raw", target)
+
+            if chunk_len <= 4:
+                break
+            off += chunk_len - 4
+
+
 # --------------------------------------------------------------------------- #
 # Results and materialization
 # --------------------------------------------------------------------------- #
@@ -266,13 +338,13 @@ def materialize(result):
     ea = result["ea"]
     kind = result["kind"]
 
-    if kind in ("rip-relative", "absolute-code"):
+    if kind in ("rip-relative", "absolute-code", "rel32-code"):
         if not ida_bytes.is_code(ida_bytes.get_flags(ea)):
             ida_bytes.del_items(ea, ida_bytes.DELIT_SIMPLE,
                                 max(result["size"], 1))
         return ida_ua.create_insn(ea) > 0
 
-    if kind == "absolute-data":
+    if kind in ("absolute-data", "rel32-raw"):
         psize = _ptr_size()
         if ida_bytes.is_unknown(ida_bytes.get_flags(ea)):
             if psize == 8:
@@ -338,13 +410,35 @@ def run_find_xrefs():
     if head != ida_idaapi.BADADDR:
         target = head
 
+    mode_choice = ida_kernwin.ask_buttons(
+        "Default Mode",
+        "Raw Relative 32-bit",
+        "",
+        0,
+        "Select Reference Scanning Engine:\n\n"
+        "• Default: Standard disassembly RIP-relative & absolute scanning.\n"
+        "• Raw Relative 32-bit: Brute-force sliding relative offset calculation (target = ea + 4 + rel32)."
+    )
+
+    if mode_choice == -1:
+        return
+
     scan_code_only = ida_kernwin.ask_yn(
         1, "Scan code segments ONLY?\n"
            "(No = scan the whole database, slower)")
+
     if scan_code_only == -1:
         return
 
-    segments = list(_iter_segments(code_only=bool(scan_code_only)))
+    code_only = (scan_code_only == 1)
+    run_mode = "default"
+
+    if mode_choice == 1:
+        run_mode = "default"
+    elif mode_choice == 0:
+        run_mode = "raw_rel32"
+
+    segments = list(_iter_segments(code_only=code_only))
     if not segments:
         ida_kernwin.warning("No loaded segments to scan.")
         return
@@ -352,15 +446,31 @@ def run_find_xrefs():
     found = {}
     ida_kernwin.show_wait_box("Find Xrefs: scanning memory...")
     try:
-        scan_rip_relative(target, segments, found)
-        if not ida_kernwin.user_cancelled():
-            scan_absolute(target, segments, found)
+        if run_mode == "raw_rel32":
+            scan_raw_rel32(target, segments, found)
+        else:
+            scan_rip_relative(target, segments, found)
+            if not ida_kernwin.user_cancelled():
+                scan_absolute(target, segments, found)
     finally:
         ida_kernwin.hide_wait_box()
 
     if ida_kernwin.user_cancelled():
         ida_kernwin.msg("[Find Xrefs] Cancelled by user.\n")
         return
+
+    if not found and run_mode == "default":
+        if ida_kernwin.ask_yn(
+            1,
+            "No references found with Default engine for %#x.\n\n"
+            "Would you like to try scanning using Raw Relative 32-bit mode?"
+            % target
+        ) == 1:
+            ida_kernwin.show_wait_box("Find Xrefs: scanning with Raw Relative 32-bit engine...")
+            try:
+                scan_raw_rel32(target, segments, found)
+            finally:
+                ida_kernwin.hide_wait_box()
 
     results = sorted(found.values(), key=lambda r: r["ea"])
     if not results:

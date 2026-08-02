@@ -23,13 +23,17 @@ but because that code was never decoded.
 ## What it does
 
 Place the cursor on the string (or any target address) and run the plugin. It
-scans the entire database for references to that address and **materializes**
-each match so the xref shows up:
+scans the entire database for references to that address using your chosen 
+engine and **materializes** each match so the xref shows up:
 
-1. **RIP-relative (x86-64)** — detects `lea/mov reg, [rip + disp32]` where
-   `target == disp_addr + 4 + disp32`.
-2. **Absolute** — literal pointers to the address (data tables, `mov reg, imm`,
-   `push offset`, ...).
+1. **Default Mode (Heuristic Disassembly)**
+   - **RIP-relative (x86-64):** detects `lea/mov reg, [rip + disp32]` where
+     `target == disp_addr + 4 + disp32`.
+   - **Absolute:** literal pointers to the address (data tables, `mov reg, imm`,
+     `push offset`, ...).
+2. **Raw Relative 32-bit Mode:** Brute-forces a sliding window scan across all
+   memory evaluating `target == current_ea + 4 + rel32` for non-standard or 
+   heavily obfuscated relative offsets.
 
 For each match landing on undefined bytes it calls `create_insn` (code) or
 creates a data offset. Once the byte becomes code/offset, IDA generates the
@@ -48,23 +52,23 @@ Restart IDA.
 
 1. Put the cursor on the string / address with the missing xrefs.
 2. Press **Ctrl-Shift-X** (or `Edit > Plugins > Find Xrefs`).
-3. Choose whether to scan code segments only (faster) or the whole database.
-4. Review the found references in the list (double-click to jump).
-5. Confirm to materialize them — then press **X** on the string to see the xrefs.
+3. Select your preferred scanning engine (**Default** or **Raw Relative 32-bit**).
+4. Choose whether to scan code segments only (faster) or the whole database.
+5. Review the found references in the list (double-click to jump).
+6. Confirm to materialize them — then press **X** on the string to see the xrefs.
 
 ## Requirements
 
 - IDA Pro with IDAPython (x86-64 for RIP-relative scanning; 32-bit uses the
-  absolute scan).
-- **numpy is optional.** If present, the RIP scan uses a vectorized engine
-  (~5× faster on the byte sweep). If not, it automatically falls back to a
-  regex-based engine that needs nothing beyond the standard library. The plugin
-  prints which engine is active on load.
+  absolute/relative scan).
+- **numpy is optional.** If present, both RIP-relative and Raw Relative 32-bit scans use a vectorized engine (~5× faster on the byte sweep). If not, it automatically falls back to regex and standard loop engines that need nothing beyond the standard library. The plugin prints which engine is active on load.
 
 ## Notes
 
 - Large segments are scanned in overlapping chunks with a cancellable progress
   box.
+- If **Default Mode** finds 0 candidates, the plugin automatically offers a 
+  fallback prompt to scan using the **Raw Relative 32-bit** engine.
 
 ## License
 
